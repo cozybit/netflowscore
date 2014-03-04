@@ -4,28 +4,40 @@ import webapp2
 import random
 import uuid 
 import logging
-from datetime import datetime
+import bisect
 
+from datetime import datetime, timedelta
 from google.appengine.ext import ndb
+
+TEST_ITERATIONS = 10
+
+SCORING = [
+    ( 1100, 'EXCELLENT' ),
+    ( 1400, 'GOOD' ),
+    ( 2000, 'FAIR' ),
+    ( 2500, 'POOR' ),
+]
 
 class TestPoint(ndb.Model):
     model = ndb.StringProperty()
-    start_time = ndb.DateTimeProperty(auto_now_add=True)
-    end_time = ndb.DateTimeProperty()
+    user_agent = ndb.StringProperty()
+    start_times = ndb.DateTimeProperty(repeated=True)
+    end_times = ndb.DateTimeProperty(repeated=True)
+    iteration = ndb.IntegerProperty()
     score = ndb.IntegerProperty()
 
 class StartHandler(webapp2.RequestHandler):
   def get(self):
     model = self.request.get('model')
-    if not model:
-      # if not given explicitely, get it from browser
-      model = str(self.request.headers['User-Agent'])
+    user_agent = str(self.request.headers['User-Agent'])
     logging.info("model=" + model)
     token = str(uuid.uuid4())
     self.response.set_status(303)
     self.response.headers['Location'] = '/test?token=' + token
     tp = TestPoint(id=token)
-    tp.end_time = datetime.max
+    tp.start_times = []
+    tp.end_times = []
+    tp.iteration = TEST_ITERATIONS
     tp.put()
 
 class TestHandler(webapp2.RequestHandler):
@@ -38,8 +50,24 @@ class TestHandler(webapp2.RequestHandler):
       logging.error("Test is not in progress.")
     for i in range(100000):
       self.response.out.write("%04x" % i)
+
+    # All requests redirected to this handler, except for the last iteration
+    # that goes to the result page. 
     self.response.set_status(303)
-    self.response.headers['Location'] = '/result?token=' + token
+
+    # start times recorded in all iterations but last
+    # end times recorded in all iterations but first
+    if tp.iteration != 0:
+      tp.start_times.append(datetime.now())
+      self.response.headers['Location'] = '/test?token=' + token
+    else:
+      self.response.headers['Location'] = '/result?token=' + token
+
+    if tp.iteration != TEST_ITERATIONS:
+      tp.end_times.append(datetime.now())
+
+    tp.iteration -= 1;
+    tp.put()
 
 class ResultHandler(webapp2.RequestHandler):
   def get(self):
@@ -49,14 +77,18 @@ class ResultHandler(webapp2.RequestHandler):
     if not tp:
       logging.error("Test is not in progress.")
 
-    if tp.end_time == datetime.max:
-      tp.end_time = datetime.now()
-      tp.put()
+    measurements = zip(tp.start_times, tp.end_times)
+    deltas = [m[1] - m[0] for m in measurements]
+    avg_delta = sum(deltas, timedelta(0)) / len(deltas)
+    avg_delta_in_msecs = int(1000 * avg_delta.total_seconds())
+    
+    logging.info("measurement = " + str(avg_delta_in_msecs))
 
-    delta = tp.end_time - tp.start_time
-    logging.info("delta:" + str(delta.microseconds) + " end_time:" + str(tp.end_time))
-    self.response.out.write("score =" + str(delta.total_seconds()))
-    self.response.out.write('<div><a href="/start">retest</a></div>')
+    score_idx = bisect.bisect_right(SCORING, (avg_delta_in_msecs, ))
+    logging.info("score = " + SCORING[score_idx][1])
+
+    self.response.headers['Content-Type'] = 'text/plain'
+    self.response.out.write(SCORING[score_idx][1])
 
 class MainHandler(webapp2.RequestHandler):
   def get(self):
