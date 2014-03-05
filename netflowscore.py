@@ -10,35 +10,70 @@ from datetime import datetime, timedelta
 from google.appengine.ext import ndb
 
 TEST_ITERATIONS = 10
+TEST_DEADLINE_IN_SECS = 10.0  
 
-SCORING = [
-    ( 1100, 'EXCELLENT' ),
-    ( 1400, 'GOOD' ),
-    ( 2000, 'FAIR' ),
-    ( 2500, 'POOR' ),
-]
+def create_test_point(netnode_idx, calibration = False):
+    token = str(uuid.uuid4())
+    tp = TestPoint(id=token)
+    tp.iteration = 0
+    tp.calibration = calibration 
+    tp.netnode_idx = netnode_idx
+    tp.put()
+    return token
+
+# indexed by ip_addr + device_type OR, by ip_addr alone, if device type not
+# available 
+class NetworkNodeModel(ndb.Model):
+    reference_score = ndb.IntegerProperty()
+    ip_addr = ndb.StringProperty()
+    device_type = ndb.StringProperty()
 
 class TestPoint(ndb.Model):
-    model = ndb.StringProperty()
-    user_agent = ndb.StringProperty()
-    start_times = ndb.DateTimeProperty(repeated=True)
-    end_times = ndb.DateTimeProperty(repeated=True)
+    calibration = ndb.BooleanProperty()
+    netnode_idx = ndb.StringProperty()
+    start_time = ndb.DateTimeProperty(auto_now_add=True)
     iteration = ndb.IntegerProperty()
     score = ndb.IntegerProperty()
 
 class StartHandler(webapp2.RequestHandler):
   def get(self):
-    model = self.request.get('model')
-    user_agent = str(self.request.headers['User-Agent'])
-    logging.info("model=" + model)
-    token = str(uuid.uuid4())
+    ip = self.request.remote_addr
+    device_type = self.request.get('device_type')
+
+    netnode_idx = ip + device_type
+
+    nn = NetworkNodeModel.get_by_id(netnode_idx)
+    if nn == None:
+      self.error(403)
+      self.status_message = "This device is not calibrated on this network. /calibrate first."
+      return
+
+    logging.info("Starting test for device idx: " + netnode_idx)
+    token = create_test_point(netnode_idx)
     self.response.set_status(303)
     self.response.headers['Location'] = '/test?token=' + token
-    tp = TestPoint(id=token)
-    tp.start_times = []
-    tp.end_times = []
-    tp.iteration = TEST_ITERATIONS
-    tp.put()
+
+class CalibrateHandler(webapp2.RequestHandler):
+  def get(self):
+    ip = self.request.remote_addr
+    device_type = self.request.get('device_type')
+
+    netnode_idx = ip + device_type
+
+    # look up or create the NetworkNode
+    nn = NetworkNodeModel.get_by_id(netnode_idx)
+    if nn == None:
+      logging.info("Created new network node with id: " + netnode_idx)
+      nn = NetworkNodeModel(id=netnode_idx)
+      nn.device_type = device_type
+      nn.put()
+    else:
+      logging.info("Recalibrated network node with id: " + netnode_idx)
+    
+    # launch a test with calibration flag
+    token = create_test_point(netnode_idx, calibration=True)
+    self.response.set_status(303)
+    self.response.headers['Location'] = '/test?token=' + token
 
 class TestHandler(webapp2.RequestHandler):
   def get(self):
@@ -48,25 +83,21 @@ class TestHandler(webapp2.RequestHandler):
       self.error(500)
       self.status_message = "Test is not in progress."
       logging.error("Test is not in progress.")
-    for i in range(100000):
-      self.response.out.write("%04x" % i)
+
 
     # All requests redirected to this handler, except for the last iteration
     # that goes to the result page. 
     self.response.set_status(303)
 
-    # start times recorded in all iterations but last
-    # end times recorded in all iterations but first
-    if tp.iteration != 0:
-      tp.start_times.append(datetime.now())
-      self.response.headers['Location'] = '/test?token=' + token
-    else:
+    delta = datetime.now() - tp.start_time
+    if (delta.total_seconds() > TEST_DEADLINE_IN_SECS):
       self.response.headers['Location'] = '/result?token=' + token
+    else:
+      self.response.headers['Location'] = '/test?token=' + token
+      for i in range(1000 * (1 << tp.iteration)):
+        self.response.out.write("%04x" % i)
 
-    if tp.iteration != TEST_ITERATIONS:
-      tp.end_times.append(datetime.now())
-
-    tp.iteration -= 1;
+    tp.iteration += 1;
     tp.put()
 
 class ResultHandler(webapp2.RequestHandler):
@@ -77,18 +108,24 @@ class ResultHandler(webapp2.RequestHandler):
     if not tp:
       logging.error("Test is not in progress.")
 
-    measurements = zip(tp.start_times, tp.end_times)
-    deltas = [m[1] - m[0] for m in measurements]
-    avg_delta = sum(deltas, timedelta(0)) / len(deltas)
-    avg_delta_in_msecs = int(1000 * avg_delta.total_seconds())
-    
-    logging.info("measurement = " + str(avg_delta_in_msecs))
+    # try to look up the NetworkNode
+    nn = NetworkNodeModel.get_by_id(tp.netnode_idx)
 
-    score_idx = bisect.bisect_right(SCORING, (avg_delta_in_msecs, ))
-    logging.info("score = " + SCORING[score_idx][1])
+    if nn == None:
+      logging.error("Could not find network node for calibration test for idx "
+         + tp.netnode_idx)
+      return
+
+    if tp.calibration:
+      nn.reference_score = tp.iteration
+      tp.calibration = False
+      nn.put()
+
+    score = float(tp.iteration / nn.reference_score)
+    logging.info("score = %.2f" % score)
 
     self.response.headers['Content-Type'] = 'text/plain'
-    self.response.out.write(SCORING[score_idx][1])
+    self.response.out.write("%.2f" % score)
 
 class MainHandler(webapp2.RequestHandler):
   def get(self):
@@ -97,5 +134,6 @@ class MainHandler(webapp2.RequestHandler):
 application = webapp2.WSGIApplication([('/', MainHandler),
                               ('/start', StartHandler),
                               ('/test', TestHandler),
-                              ('/result', ResultHandler)],
+                              ('/result', ResultHandler),
+                              ('/calibrate', CalibrateHandler)],
                               debug=True)
