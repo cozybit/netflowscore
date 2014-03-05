@@ -18,6 +18,7 @@ def create_test_point(netnode_idx, calibration = False):
     tp.freeze_size_iteration = 0
     tp.calibration = calibration 
     tp.netnode_idx = netnode_idx
+    tp.score = -1
     tp.put()
     return token
 
@@ -34,7 +35,7 @@ class TestPoint(ndb.Model):
     start_time = ndb.DateTimeProperty(auto_now_add=True)
     iteration = ndb.IntegerProperty()
     freeze_size_iteration = ndb.IntegerProperty()
-    score = ndb.IntegerProperty()
+    score = ndb.FloatProperty()
 
 class StartHandler(webapp2.RequestHandler):
   def get(self):
@@ -111,6 +112,14 @@ class ResultHandler(webapp2.RequestHandler):
     if not tp:
       logging.error("Test is not in progress.")
 
+    self.response.headers['Content-Type'] = 'text/plain'
+
+    # A score for this testpoint has already been computed.
+    # Return just that.
+    if tp.score != -1:
+      self.response.out.write("%.2f" % tp.score)
+      return
+    
     # try to look up the NetworkNode
     nn = NetworkNodeModel.get_by_id(tp.netnode_idx)
 
@@ -124,11 +133,11 @@ class ResultHandler(webapp2.RequestHandler):
       tp.calibration = False
       nn.put()
 
-    score = float(min(tp.iteration, nn.reference_score)) / nn.reference_score
-    logging.info("score = %.2f" % score)
+    tp.score = float(min(tp.iteration, nn.reference_score)) / nn.reference_score
+    logging.info("score = %.2f" % tp.score)
 
-    self.response.headers['Content-Type'] = 'text/plain'
-    self.response.out.write("%.2f" % score)
+    self.response.out.write("%.2f" % tp.score)
+    tp.put()
 
 class MainHandler(webapp2.RequestHandler):
   def get(self):
