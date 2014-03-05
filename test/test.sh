@@ -6,11 +6,11 @@
 
 set -x
 
-URL=$1
-ACTION=$2
+ACTION=$1
+URL=$2
 
-[ "$URL" != "" ] || URL='http://netflowscore.appspot.com'
 [ "$ACTION" != "" ] || ACTION='start'
+[ "$URL" != "" ] || URL='http://netflowscore.appspot.com'
 
 TOKEN=`curl ${URL}/${ACTION}?version=2`
 /usr/local/bin/siege --quiet -r 1 -c 20  ${URL}/test?token=${TOKEN}
