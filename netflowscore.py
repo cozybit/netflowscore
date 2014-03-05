@@ -19,6 +19,7 @@ def create_test_point(netnode_idx, calibration = False):
     tp.calibration = calibration 
     tp.netnode_idx = netnode_idx
     tp.score = -1
+    tp.start_time = None
     tp.put()
     return token
 
@@ -32,7 +33,7 @@ class NetworkNodeModel(ndb.Model):
 class TestPoint(ndb.Model):
     calibration = ndb.BooleanProperty()
     netnode_idx = ndb.StringProperty()
-    start_time = ndb.DateTimeProperty(auto_now_add=True)
+    start_time = ndb.DateTimeProperty(auto_now_add=False)
     iteration = ndb.IntegerProperty()
     freeze_size_iteration = ndb.IntegerProperty()
     score = ndb.FloatProperty()
@@ -41,6 +42,7 @@ class StartHandler(webapp2.RequestHandler):
   def get(self):
     ip = self.request.remote_addr
     device_type = self.request.get('device_type')
+    version = self.request.get('version')
 
     netnode_idx = ip + device_type
 
@@ -52,13 +54,18 @@ class StartHandler(webapp2.RequestHandler):
 
     logging.info("Starting test for device idx: " + netnode_idx)
     token = create_test_point(netnode_idx)
-    self.response.set_status(303)
-    self.response.headers['Location'] = '/test?token=' + token
+    if version == '2':
+        self.response.headers['Content-Type'] = 'text/plain'
+        self.response.out.write(token)
+    else:
+      self.response.set_status(303)
+      self.response.headers['Location'] = '/test?token=' + token
 
 class CalibrateHandler(webapp2.RequestHandler):
   def get(self):
     ip = self.request.remote_addr
     device_type = self.request.get('device_type')
+    version = self.request.get('version')
 
     netnode_idx = ip + device_type
 
@@ -74,8 +81,12 @@ class CalibrateHandler(webapp2.RequestHandler):
     
     # launch a test with calibration flag
     token = create_test_point(netnode_idx, calibration=True)
-    self.response.set_status(303)
-    self.response.headers['Location'] = '/test?token=' + token
+    if version == '2':
+        self.response.headers['Content-Type'] = 'text/plain'
+        self.response.out.write(token)
+    else:
+      self.response.set_status(303)
+      self.response.headers['Location'] = '/test?token=' + token
 
 class TestHandler(webapp2.RequestHandler):
   def get(self):
@@ -86,9 +97,13 @@ class TestHandler(webapp2.RequestHandler):
       self.status_message = "Test is not in progress."
       logging.error("Test is not in progress.")
 
+    # If this is the first time we see this token, and therefore the start of the
+    # test proper, then record the start time.
+    if tp.start_time == None:
+      tp.start_time = datetime.now()
 
-    # All requests redirected to this handler, except for the last iteration
-    # that goes to the result page. 
+    # All requests redirected.  All but the last go back to this handler.
+    # The last one goes to the result page. 
     self.response.set_status(303)
 
     delta = datetime.now() - tp.start_time
