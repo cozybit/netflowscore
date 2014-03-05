@@ -121,7 +121,7 @@ class ResultHandler(webapp2.RequestHandler):
       tp.calibration = False
       nn.put()
 
-    score = float(tp.iteration / nn.reference_score)
+    score = float(min(tp.iteration, nn.reference_score)) / nn.reference_score
     logging.info("score = %.2f" % score)
 
     self.response.headers['Content-Type'] = 'text/plain'
