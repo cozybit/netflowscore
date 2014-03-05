@@ -9,13 +9,13 @@ import bisect
 from datetime import datetime, timedelta
 from google.appengine.ext import ndb
 
-TEST_ITERATIONS = 10
 TEST_DEADLINE_IN_SECS = 10.0  
 
 def create_test_point(netnode_idx, calibration = False):
     token = str(uuid.uuid4())
     tp = TestPoint(id=token)
     tp.iteration = 0
+    tp.freeze_size_iteration = 0
     tp.calibration = calibration 
     tp.netnode_idx = netnode_idx
     tp.put()
@@ -33,6 +33,7 @@ class TestPoint(ndb.Model):
     netnode_idx = ndb.StringProperty()
     start_time = ndb.DateTimeProperty(auto_now_add=True)
     iteration = ndb.IntegerProperty()
+    freeze_size_iteration = ndb.IntegerProperty()
     score = ndb.IntegerProperty()
 
 class StartHandler(webapp2.RequestHandler):
@@ -94,10 +95,12 @@ class TestHandler(webapp2.RequestHandler):
       self.response.headers['Location'] = '/result?token=' + token
     else:
       self.response.headers['Location'] = '/test?token=' + token
-      for i in range(1000 * (1 << tp.iteration)):
+      for i in range(1000 * (1 << tp.freeze_size_iteration)):
         self.response.out.write("%04x" % i)
 
     tp.iteration += 1;
+    if (delta.total_seconds() < TEST_DEADLINE_IN_SECS / 4):
+      tp.freeze_size_iteration += 1
     tp.put()
 
 class ResultHandler(webapp2.RequestHandler):
